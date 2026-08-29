@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
