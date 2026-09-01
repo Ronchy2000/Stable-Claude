@@ -12,5 +12,21 @@
 .env.*
 !.env.example
 
+# Claude Workspace runtime state and credentials
+claude-workspace/.env
+claude-workspace/code-server.env
+claude-workspace/admin-credentials
+claude-workspace/*.credentials.json
+claude-workspace/*.pem
+claude-workspace/*.key
+claude-workspace/*.secret
+claude-workspace/*.pending
+claude-workspace/browser/
+claude-workspace/home/.claude/
+claude-workspace/home/.claude.json
+claude-workspace/.cloudflared/
+runtime/
+backups/
+
 # Logs
 *.log

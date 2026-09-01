@@ -1,355 +1,229 @@
-# Claude Code 稳定环境搭建指南
+# Remote Claude Workspace
 
-先交代一下背景：我前后被封了 6 个 Claude 账号——2 个 Free、1 个 Pro、3 个 Max。
+这是一个把 Claude 官方网页和官方 Claude Code 放到远程 ARM64 Linux 服务器上的开源部署方案。用户只需要在本地浏览器访问两个受保护的网页：一个显示远程 Chromium 画面，另一个提供 code-server 终端；浏览器 Profile、项目文件、登录状态和 Claude Code 进程都保留在服务器上。
 
-最近使用 Claude Code 的人越来越多，验证、限制甚至封号的问题也不少：
+> [!IMPORTANT]
+> 在运行任何命令、把执行 Prompt 交给 AI 或修改服务器之前，必须完整阅读本 README.md 和 [AGENTS.md](AGENTS.md)。未读完前不要执行部署操作。
 
-- 刚登录几次就触发验证
-- Pro 账号突然被限制
-- Claude Code 授权不稳定
-- 换了节点之后问题依然存在
+> [!NOTE]
+> 本项目只提供“固定远程工作区”的工程方案，不保证账号永不触发验证，也不用于绕过地区限制、封禁或平台审核。
 
-一开始我也以为是账号本身的问题。直到把这 6 个账号的使用轨迹放在一起复盘，才发现一个更明显的共同点：使用环境变化得太频繁。
+它适合经常更换设备或网络、希望把工作环境固定下来的人。它不是 Claude 的 API 中转站，不反向代理 Claude.ai，也不是绕过地区限制或平台封禁的工具。
 
-比如：
+## 为什么需要固定工作区
 
-- 今天用本地 Chrome
-- 明天开无痕模式
-- 后天换一个代理节点
-- 一会儿 IP 在美国
-- 一会儿 IP 又跳到日本
-- Cookie、时区、语言、WebRTC 都不固定
+Anthropic 没有公开完整的风控规则，所以不能声称知道某个账号“必封”或“必不封”。从实际使用现象看，服务可能综合判断：
 
-从风控系统的视角看，这些行为很难组成一条连续、稳定的使用记录。
+- IP 的国家、ASN、稳定性和网络路径；
+- 浏览器 Profile、Cookie、设备和 OAuth 会话是否连续；
+- 短时间内的登录地点、设备和账号切换；
+- 使用模式、并发行为、账号与付款资料等其他信号。
 
-后来我给 Claude 单独搭了一套固定环境：
+如果今天用本地 Chrome、明天换无痕窗口、后天又换另一个节点，服务端看到的可能是不同设备、不同 IP 和不连续的会话。固定一个远程 Profile 和一个长期服务器出口，可以减少这类环境漂移，但不能保证账号永不触发验证。
 
-> 一个专属浏览器 Profile + 一个固定 ISP 出口。
+## 这个项目具体做什么
 
-整套配置第一次做也用不了太久。下面是我的具体做法，适合遇到类似问题的人参考。
+项目把两个官方客户端放到服务器上：
 
-> 先说明：这是我根据个人经历做的复盘，不是 Anthropic 官方给出的风控规则，也不能说明所有封号都由环境变化导致。代理的使用也应遵守当地法律和平台规则。
+1. LinuxServer Chromium 直接打开官方 https://claude.ai，用户看到的是画面串流；
+2. code-server 提供浏览器终端，终端里运行官方 Claude Code，代码和命令都在服务器执行；
+3. Cloudflare Access 负责身份和 MFA，Cloudflare Tunnel 负责把本机回环端口安全带到浏览器；
+4. 工作区使用独立目录、Docker network、systemd 服务和资源限制，不触碰原有 Caddy、Docker、数据库和入口服务。
 
-## 先说结论
+请求路径如下：
+
+~~~text
+本地浏览器
+  -> Cloudflare Access（邮箱/身份组 + MFA）
+  -> Cloudflare Tunnel
+  -> 服务器 127.0.0.1:<BROWSER_PORT>
+  -> 远程 Chromium 画面串流
+  -> 官方 https://claude.ai
 
-稳定使用 Claude Code 的关键不是“多换节点”，而是尽量减少环境变化。
+本地浏览器
+  -> Cloudflare Access（邮箱/身份组 + MFA）
+  -> Cloudflare Tunnel
+  -> 服务器 127.0.0.1:<CODE_PORT>
+  -> code-server
+  -> 服务器上的官方 Claude Code
+  -> Anthropic
+~~~
 
-我的做法是：
+Claude 网页的 Cookie、浏览器 Profile、DNS、TLS 和网页请求留在服务器；Claude Code、项目文件和 Shell 也留在服务器。断开本地浏览器不会结束 tmux 中的任务。
 
-- 用 Nstbrowser 创建 Claude 专属 Profile
-- 用 Nstproxy ISP 固定网络出口
-- 注册、登录、授权、订阅和日常使用尽量在同一个 Profile 中完成
-- 不频繁更换 IP
-- 不混用本地浏览器和 Profile
-- 不用无痕模式长期登录
+本地机场或其他网络中继只用于访问 Cloudflare hostname，不应写入服务器的 HTTP_PROXY、HTTPS_PROXY、ANTHROPIC_BASE_URL，也不应把 Claude OAuth 交给 CPA、CLIProxyAPI 或其他第三方 relay。使用前仍需确认 Anthropic、Cloudflare、云厂商、网络服务商和当地法律允许这种方式。
 
-几款工具的分工很简单：
+## 默认方案：少改动、可回滚
 
-| 工具 | 作用 |
-| --- | --- |
-| Nstbrowser | 固定浏览器环境 |
-| Nstproxy ISP | 固定网络出口 |
-| CleanIP | 检查 IP、网络路径与浏览器环境 |
+默认使用当前 SSH 登录的非 root 用户运行 code-server、项目和 Claude Code，不自动创建新 Linux 用户。这样部署步骤少，也不会触碰现有账号、服务和权限结构。
 
-## 1. 什么是适合 Claude Code 的稳定环境？
+> [!IMPORTANT]
+> 这是“少改动”的默认模式，不是强安全隔离。服务器上有敏感业务或多个不可信用户时，应明确选择 dedicated-user 模式；任何模式都必须先做旧服务基线和可回滚备份。
 
-不用想得太复杂。
+默认必须遵守：
 
-一个适合 Claude Code 的稳定环境，核心就是两件事：
+- 新服务只写入 /opt/claude-workspace、/srv/claude-workspace、专用 systemd 单元和专用 Docker network。
+- Chromium 只发布到 127.0.0.1，默认端口是 3010；code-server 默认端口是 8080。端口被占用时改用其他未占用的回环端口，不抢占旧服务。
+- Chromium 不使用 host network，不挂载 Docker socket、SSH key、旧项目目录或数据库目录。
+- Cloudflare Tunnel 只指向回环端口，不经过现有 Caddy/Nginx，不创建指向服务器 IP 的 A/AAAA 记录。
+- 先记录旧容器、网络、监听端口、入口配置、磁盘和内存，再启动任何新服务。
+- 不执行全局 docker compose down、docker system prune、ufw reset、nft flush ruleset、系统级大范围升级或修改旧服务的 systemd/Caddy 配置。
+- 每个工作区服务有资源上限；失败时只停止工作区，不联动旧业务。
+- 运行时 .env、密码、Tunnel credentials、浏览器 Profile、OAuth 状态和日志都放在仓库外。
 
-- 固定浏览器身份
-- 固定网络地址
+默认模式的边界是“运行和网络隔离”，不是强安全边界：当前管理员用户通常仍有 sudo 权限。如果服务器上有其他用户或敏感业务，请启用下面的可选多账户模式。
 
-浏览器身份包括：
+## 你需要准备什么
 
-- Cookie
-- 缓存
-- Canvas
-- WebGL
-- Audio
-- 字体
-- 系统版本
-- 语言
-- 时区
-- WebRTC
+1. 一台 Ubuntu 22.04/24.04 ARM64（aarch64）服务器。4 GiB 内存是下限，8 GiB 以上更舒服；磁盘至少预留 30 GiB。
+2. 一个已接入 Cloudflare 的域名，准备两个没有冲突的子域名，例如 `claude.example.com` 和 `code.example.com`。
+3. Cloudflare Zero Trust 权限，可以创建两个 Self-hosted Access 应用和一个 locally-managed Tunnel。
+4. Access 使用的邮箱/身份组和 MFA。
+5. 服务器上的非 root SSH 管理账号，并且能够使用 sudo。
+6. 符合 Anthropic 服务条款的 Claude 账号。网页端使用订阅账号；Claude Code 使用官方支持的登录方式，不填 API relay 地址。
 
-网络地址主要指：
+## 最快开始
 
-- 出口 IP
-- IP 地区
-- ASN 类型
-- DNS
-- 代理稳定性
+在服务器上执行只读预检：
 
-如果这两层保持稳定，服务端记录到的登录环境会更连贯。反过来，如果 IP、Cookie、时区和设备信息每天都在变化，就更容易触发额外验证。
+~~~bash
+git clone <REPOSITORY_URL> <REPOSITORY_DIR>
+cd <REPOSITORY_DIR>
+chmod +x scripts/check.sh
+./scripts/check.sh preflight
+~~~
 
-问题不在于普通浏览器本身，而在于是否长期使用同一个 Profile。无痕模式不会保留常规 Cookie 和站点数据，因此不适合作为长期登录环境。
+然后把下面的 Prompt 原样复制给具有终端权限的 AI（Claude Code、Codex 或其他可靠的 coding agent）。Prompt 已经包含“先检查、再备份、遇到冲突就停”的规则；不需要把真实密码、Token 或 Cookie 粘贴给 AI。
 
-所以更合理的做法是：
+## 可直接复制给 AI 的执行 Prompt
 
-> 给 Claude Code 单独创建一个固定 Profile。
+~~~text
+你是这台 Ubuntu ARM64 服务器的部署代理。请在当前仓库目录执行 Remote Claude Workspace，目标是：
+1. 远程 Chromium 访问官方 https://claude.ai，并通过浏览器画面串流使用；
+2. code-server 提供浏览器终端，在服务器上运行官方 Claude Code；
+3. 两个服务只监听服务器回环地址，再由独立 Cloudflare Tunnel 暴露；
+4. 不使用 Anthropic API relay、CPA、CLIProxyAPI、New API、LibreChat、Cookie 导入或浏览器指纹伪装。
 
-## 2. 需要准备的工具
+先完整阅读当前仓库的 AGENTS.md 和 README.md，再执行：
+./scripts/check.sh preflight
 
-搭建环境主要用到 Nstbrowser 和 Nstproxy ISP，登录前再用 CleanIP 做一次检查。
+执行纪律：
+- 默认使用当前 SSH 登录的非 root 用户（existing-user 模式）。只有我明确说“dedicated-user 模式”时，才创建 claude-ws 等新用户。
+- 绝不使用 root 运行 Chromium、code-server 或 Claude Code。若当前是 root 登录，先让我提供一个现有非 root 管理账号。
+- 先保存旧 Docker 容器、network、监听端口、Caddy/Nginx 状态、磁盘、内存和 systemd 状态。不要改变旧服务的镜像、volume、network、端口、启动时间或配置。
+- 只允许新增 /opt/claude-workspace、/srv/claude-workspace、名为 claude-workspace 的 Docker network、名为 claude-workspace-chromium 的容器，以及约定的三个 systemd 单元。默认数据目录为 /srv/claude-workspace，root 管理配置目录为 /opt/claude-workspace。
+- 先确认 3010 和 8080 未被占用；被占用就选择其他未占用的 127.0.0.1 端口，并把端口告诉我。禁止绑定 0.0.0.0、host network 或旧 Docker network。
+- 不执行 docker compose down（除非明确指定工作区 compose 文件），不执行 docker system prune、ufw reset、nft flush ruleset、系统级大范围升级，也不修改旧 Caddy/Nginx、sshd、Docker daemon 或数据库。
+- 缺少依赖时只安装官方需要的最小软件包；如果 apt 操作会升级无关生产服务，先停下来询问我。
+- Chromium 使用官方 LinuxServer ARM64 镜像，固定 tag 和 digest，不能使用 latest。code-server、cloudflared 和 Claude Code 使用官方 ARM64 发行版/安装来源并记录版本和 SHA-256。
+- 生成的生产配置和密钥必须在仓库外，权限最小化。不要在输出、Git、截图或聊天中显示密码、OAuth、Cookie、Token、私钥、完整环境变量或 credentials JSON。
+- Chromium 通过独立 bridge network；关闭分享、协作、文件传输、远程命令、麦克风和不需要的桌面功能。给 Chromium、code-server、cloudflared 设置合理 CPU、内存、PID 和日志上限。
+- code-server 使用密码认证和回环监听；Claude Code 不设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN、CLAUDE_CODE_OAUTH_TOKEN，也不继承 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY。
+- Claude Code 在 /srv/claude-workspace/projects 中运行，并用 tmux 保持长任务。不要复制其他设备的 ~/.claude、~/.claude.json、Cookie 或 OAuth 状态。
+- 创建 Cloudflare Access 应用时使用默认拒绝，只允许我的邮箱/身份组并要求 MFA。Tunnel 使用独立 locally-managed credentials file，只连接工作区回环端口，不经过现有 Caddy，也不创建源站 A/AAAA 记录。
+- Cloudflare 控制台登录、Access 策略确认、Tunnel 授权、官方 Claude 网页登录和 Claude Code OAuth 登录属于人工步骤。到这些步骤时给出清晰的操作说明并暂停，不要索要或代填秘密。
+- 每完成一个阶段都运行本地健康检查、监听检查、Docker network 检查和旧服务回归；任一旧服务发生重启、配置变化、端口变化、健康状态变化或资源越线，立即停止并报告。
+- 完成后给出：访问地址占位符、实际回环端口、服务状态、备份位置、回滚命令和仍需人工完成的登录步骤。不要输出秘密。
 
-### Nstbrowser
+如果我明确要求 dedicated-user 模式：
+- 创建无 sudo/docker/lxd/adm 附加组的 claude-ws；
+- 将登录 Home 与运行 HOME 分离，并只让它访问工作区目录；
+- 先对旧服务父目录做 ACL 预演和反向验证，再考虑按 UID/bridge 加 nftables 出站限制；
+- 不递归修改旧服务的 owner/mode，不让旧业务依赖工作区守卫；
+- 专用模式的每一步都必须可单独回滚。
+~~~
 
-用于创建 Claude 专属 Profile，并保存以下环境信息：
+AI 不能代替你的三个手动确认：Cloudflare Access 策略、官方 Claude 登录、以及最终旧服务零漂移检查。遇到端口或权限冲突时，让 AI 停止比让它“猜一个修复”更安全。
 
-- 浏览器指纹
-- Cookie
-- 缓存
-- 时区
-- 语言
-- WebRTC
-- 代理配置
+## 需要手动配置的步骤
 
-### Nstproxy ISP
+### 1. Cloudflare Access
 
-用于提供固定网络出口，避免共享节点或随机 VPN 在重连后频繁更换 IP。
+在 Zero Trust 中创建两个 Self-hosted 应用：
 
-### CleanIP
+> [!IMPORTANT]
+> 先创建默认拒绝的 Access 应用并验证 MFA，再创建 Tunnel route；不要先把未认证的后端暴露出去。
 
-[CleanIP](https://cleanip.io/) 用于检查当前公网 IP、ASN、IP 类型和网络环境。它不会替代 Claude 的风控判断，但可以帮助发现 IP 漂移、DNS 分流、WebRTC 泄露或时区不一致等明显问题。
+| 应用 | hostname | 策略 |
+| --- | --- | --- |
+| Claude Browser | `claude.<ZONE>` | 只允许自己的邮箱/身份组 + MFA |
+| Claude Code | `code.<ZONE>` | 只允许自己的邮箱/身份组 + MFA |
 
-简单理解：
+不要使用 Everyone、Bypass 或临时公开策略。先创建 Access 应用，再创建 Tunnel route。
 
-```text
-Nstbrowser = 固定浏览器身份
-Nstproxy ISP = 固定网络地址
-```
+### 2. Cloudflare Tunnel
 
-## 3. 下载并安装 Nstbrowser
+使用一个独立 locally-managed Tunnel：
 
-先打开 [Nstbrowser](https://www.nstbrowser.io/en) 官网，点击 `Download`，选择对应的系统版本下载安装。
+- `claude.<ZONE>` -> `http://127.0.0.1:<BROWSER_PORT>`
+- `code.<ZONE>` -> `http://127.0.0.1:<CODE_PORT>`
+- 兜底 -> http_status:404
 
-安装完成后，打开 Nstbrowser。
+Tunnel credentials 放在服务器受限目录，由专用 cloudflared 用户读取。不要把长期 Tunnel Token 写进命令行或仓库。DNS route 应该指向 Tunnel，不应该指向服务器 IP。
 
-## 4. 注册并登录 Nstbrowser
+### 3. 首次网页登录
 
-打开 Nstbrowser 后，先注册一个账号。
+打开 `https://claude.<ZONE>`，通过 Access 和 Chromium 第二层认证后，在远程 Chromium 内只访问 `https://claude.ai`。登录成功后让 AI 重启 Chromium 并确认 Profile 持久化。
 
-注册完成并登录后台后，会看到 Profile 管理界面。
+### 4. 首次 Claude Code 登录
 
-你可以把这里理解成：
+打开 `https://code.<ZONE>`，进入 `/srv/claude-workspace/projects`，连接或创建 tmux：
 
-> 浏览器环境列表。
+~~~bash
+tmux new-session -A -s claude
+claude auth login
+claude auth status
+~~~
 
-不同平台、不同账号可以分别创建 Profile，避免 Cookie、缓存和环境配置互相干扰。
+如果 CLI 显示登录 URL，把它复制到远程 Chromium 的地址栏完成授权，不要在本地另起 Claude Code，也不要把回调地址改成公共 URL。
 
-例如：
+### 5. 在中国或其他不稳定网络中使用
 
-- Claude 使用一个 Profile
-- 其他平台另建 Profile
-- 不同账号不要混用同一个 Profile
+本地机场/中继只配置在本地设备，用来访问 https://claude.<ZONE> 和 https://code.<ZONE>。服务器上的 Chromium、code-server 和 Claude Code 不要继承本地代理环境。这样本地网络变化不会改变 Claude 官方请求的服务器出口，但仍然不代表平台政策或地区限制被绕过。
 
-## 5. 新建 Claude 专属 Profile
+## 日常使用
 
-点击 `New Profile` 或“新建 Profile”。
+- 网页端：只打开 `https://claude.<ZONE>`，不要在多个本地 Profile 之间混用同一账号。
+- Code：打开 `https://code.<ZONE>`，在 code-server 终端使用同一个 tmux 会话。
+- 健康检查：只检查 systemd 状态、Chromium health、code-server healthz、Tunnel ready 和回环监听，不用真实模型请求做心跳。
+- 备份：至少备份 /srv/claude-workspace/projects、浏览器 Profile、Claude Code 状态、/opt/claude-workspace 和 Tunnel credentials；OAuth/Cookie/密码只能进入加密备份。
+- 升级：一次只升级一个组件，先备份和记录版本，再做 ARM64 预检、回环验收和旧服务回归。
 
-Profile 名字建议写清楚，例如：
+## 可选：Linux 多账户强隔离
 
-```text
-Claude Code - Safe Profile
-```
+默认不启用，因为它会增加用户、ACL、systemd 和回滚复杂度。
 
-或者：
+以下情况建议启用：
 
-```text
-Claude - US ISP
-```
+- 服务器同时运行多个不应被工作区读取的业务；
+- 需要把项目文件、Claude Code 状态和原有服务彻底分开；
+- 不希望 code-server 终端继承现有管理员账号的文件权限。
 
-创建时可以选择：
+让 AI 使用 Prompt 中的 dedicated-user 模式。它会创建专用 claude-ws 用户、分离登录 Home/运行 HOME、最小组权限、旧目录 ACL 和可选 nftables egress guard。该模式仍然不会修改旧容器或把旧服务停掉；但 ACL 和防火墙属于高风险变更，必须逐步验证并保留回滚点。
 
-- 操作系统
-- 浏览器内核
-- 语言
-- 时区
-- 分辨率
-- WebRTC 设置
+## 出问题时怎么回滚
 
-新手不需要改得很复杂。
+1. 先从 Cloudflare 删除或停用两个 Tunnel route。
+2. 停止 cloudflared-claude-workspace.service、code-server-claude-workspace.service 和 claude-workspace-chromium.service。
+3. 只对工作区 compose 执行 docker compose down，不要加 -v。
+4. 恢复工作区配置、systemd 单元和专用 network；不要删除浏览器 Profile、OAuth 状态或项目数据。
+5. 对比部署前后的旧容器、network、监听端口、Caddy/Nginx 和资源状态。确认旧服务未被重启或改变后再结束排障。
 
-没有特殊需求时保持默认即可。如果使用代理，再让语言、时区等设置与实际使用地区保持一致。
+## 开源前
 
-这一步的重点不在于参数有多复杂，而是：
+仓库只应包含 README、AGENTS.md、检查脚本和不含生产值的说明。发布前扫描：
 
-> 创建好之后不要频繁修改。
+~~~bash
+git diff --check
+rg --hidden --glob '!.git' -n -i \
+  '真实域名|真实服务器|private.?key|api.?key|oauth|token|secret|password|credentials' .
+git rev-list --all --objects
+~~~
 
-## 6. 配置固定 ISP 代理
+所有真实域名、IP、邮箱、Tunnel ID、Cookie、OAuth、密码、API Key、SSH key、生产 digest 和运行时目录都必须留在仓库外。不要把本地机场配置或服务器备份提交到 GitHub。
 
-如果需要代理，建议使用长期固定的 ISP 出口，不要频繁切换共享节点或随机 VPN。
+## 文件
 
-原因是这类节点通常有两个问题：
-
-- 多人共用
-- 重连后 IP 可能变化
-
-账号一会儿从美国登录，一会儿又从日本登录，使用轨迹自然很难保持连贯。
-
-我这里用的是 Nstproxy ISP。
-
-购买后一般会拿到一组代理信息：
-
-- IP
-- 端口
-- 用户名
-- 密码
-- 协议类型
-
-回到 Nstbrowser，在 Claude Profile 的代理设置中选择自定义代理，然后填入这些信息。
-
-常见格式类似：
-
-```text
-IP:端口:用户名:密码
-```
-
-也可以按界面分别填写：
-
-- IP
-- 端口
-- 用户名
-- 密码
-
-填写完成后，先点击测试代理，确认连接正常。
-
-## 7. 检查 IP 和浏览器环境
-
-代理测试通过后，不要急着登录 Claude。
-
-先检查一下当前 Profile 的 IP 和浏览器环境。
-
-### 推荐的检测页面
-
-#### 1. CleanIP 首页：检查当前 IP
-
-[IP 纯净度检测](https://cleanip.io/) 会显示当前公网 IP 的国家或地区、运营商、ASN、rDNS、IP 类型及纯净度评分。配置代理后，可以先用它确认出口是否符合预期，以及重启 Profile 后 IP 会不会发生变化。
-
-纯净度评分来自第三方数据源，只适合作为排查线索，不代表 Claude 对账号或 IP 的实际判断。
-
-#### 2. 网络环境检测：检查泄露与一致性
-
-[网络环境一键检测](https://cleanip.io/check) 会从出口与分流、浏览器指纹、请求头、时区和语言、DNS、WebRTC、TLS、RPKI、端口可达性等维度生成环境报告。
-
-这个页面更适合在登录前做一次综合检查，重点关注出口 IP、DNS、WebRTC 和 IPv6 是否走了不同路径。根据页面说明，检测不会读取账号、密码、Cookie、表单内容或本地文件。
-
-#### 3. Claude Code 网络稳定指南：排查终端网络
-
-[Claude Code 网络稳定指南](https://cleanip.io/claude/claudecode) 更偏向终端侧的网络排查，内容包括 TCP 与 QUIC、TLS、DNS、IPv6 双栈、Claude 域名分流、长连接和并发请求等。
-
-如果网页端可以正常使用，但 Claude Code 经常超时、断连或授权失败，可以沿着这份指南继续检查代理和终端环境。涉及必需域名、速率限制等信息时，仍应以 Anthropic 官方文档为准。
-
-#### 4. Claude 中国用户检测：查看本地环境特征
-
-[Claude 中国用户检测](https://cleanip.io/fuck-claude) 会根据时区、语言、中文字体、设备与浏览器特征、区域设置和 emoji 渲染等 9 项本地信号，估算当前浏览器环境有多像中国大陆用户，并提供一项需要联网的 WebRTC 泄露检测。
-
-页面说明 9 项评分都在浏览器本地完成，不会上传检测数据。不过，这个分数只是第三方工具的估算，不是 Claude 的真实判定，也不应该被用来规避平台的地区限制或验证流程。
-
-### 检查重点
-
-- IP 国家是否是你选择的地区
-- DNS 是否暴露本地网络
-- WebRTC 是否泄露真实 IP
-- 时区和语言是否与代理地区基本一致
-- IP 是否稳定，会不会刷新一次变一次
-
-如果这些都正常，再继续下一步。
-
-## 8. 启动 Profile 并登录 Claude
-
-确认环境没问题后，启动这个 Profile。
-
-然后在这个 Profile 里打开 Claude 官网，进行注册或登录。
-
-以后所有 Claude 相关操作，都建议固定在这里完成：
-
-- Claude 注册
-- Claude 登录
-- Claude Code 授权
-- 账号验证
-- 订阅管理
-- 日常网页端使用
-
-不要今天在 Nstbrowser 里登录，明天又回到本地 Chrome。偶尔更换设备并不一定会出问题，但长期混用没有实际好处。
-
-## 9. 保持固定的使用习惯
-
-配置只是第一步，后续的使用习惯更重要。以后每次使用 Claude，都从这个 Nstbrowser Profile 进入。
-
-尽量避免：
-
-- 频繁修改 Profile 配置
-- 频繁更换代理 IP
-- 用无痕模式重新登录
-- 在本地浏览器和 Profile 之间来回切换
-- 多个 Claude 账号混在同一个 Profile 里
-
-如果要用 Claude Code，也尽量保持：
-
-- 同一个网络出口
-- 同一个浏览器环境
-- 同一个账号使用路径
-
-对 Claude Code 这类需要长期授权的工具来说，配置不必复杂，但环境最好保持一致。
-
-## 10. 团队使用怎么办？
-
-团队应优先使用 Anthropic 提供的 Team 或 Enterprise 方案，为每位成员分配独立账号和权限，不要多人共用个人账号、Cookie 或登录凭据。
-
-如果团队希望统一环境，可以由管理员整理 Profile 模板、代理规范和排查清单，再通过 Nstbrowser 的团队功能分发配置。需要共享的是配置标准，而不是同一个账号的完整登录状态。
-
-## 11. 我踩过的几个坑
-
-### 坑一：用无痕模式长期登录
-
-无痕模式看起来很干净，但窗口关闭后不会保留常规 Cookie 和站点数据。下一次打开时，很多会话信息都要重新建立。
-
-### 坑二：频繁换节点
-
-节点换得越勤，账号的使用轨迹越容易漂移。固定 ISP 的价值不在于“更干净”，而在于出口能够长期保持一致。
-
-### 坑三：本地浏览器和 Profile 混用
-
-如果已经给 Claude 建了专属 Profile，就不要再回到本地浏览器随手登录。
-
-### 坑四：多人共用一个账号
-
-团队成员在不同电脑、不同地区登录同一个账号，不但会产生完全不同的设备记录，也容易带来权限和凭据安全问题。团队场景应使用官方团队方案，并为成员分配独立账号。
-
-## 12. Checklist
-
-配置完成后，可以按下面的清单检查：
-
-- [ ] 是否创建了 Claude 专属 Profile
-- [ ] 是否绑定了固定 ISP 代理
-- [ ] IP 是否固定
-- [ ] DNS 是否没有泄露
-- [ ] WebRTC 是否没有暴露真实网络
-- [ ] 时区是否匹配代理地区
-- [ ] 浏览器语言是否稳定
-- [ ] 是否避免无痕模式登录
-- [ ] 是否避免本地浏览器和 Profile 混用
-- [ ] Claude 注册、登录、授权是否都在同一套环境里完成
-- [ ] 代理密码、Cookie 和登录凭据是否妥善保管
-
-## 13. 总结
-
-这套方案归根结底只有一句话：
-
-> 固定浏览器身份 + 固定网络地址。
-
-具体做法是：
-
-- 用 Nstbrowser 创建 Claude 专属 Profile
-- 用 Nstproxy ISP 固定网络出口
-- 后续 Claude 注册、登录和 Claude Code 使用，都只从这个 Profile 进入
-
-它不能保证账号永远不触发验证，也代替不了平台的正常审核，但至少可以减少由 Cookie 丢失、IP 漂移和环境反复变化带来的干扰。
-
-对长期使用 Claude Code 的人来说，先把环境整理好，再保持固定的使用习惯，后面会省心很多。
-
-## License
-
-本文采用 [CC BY 4.0](LICENSE) 许可协议。转载或修改时请保留署名，并注明原文链接。
+- AGENTS.md：AI 执行纪律和安全边界。
+- scripts/check.sh：只读预检和验收。
+- LICENSE：项目许可。
