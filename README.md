@@ -1,6 +1,50 @@
+<div align="center">
+
 # Remote Claude Workspace
 
-这是一个把 Claude 官方网页和官方 Claude Code 放到远程 ARM64 Linux 服务器上的开源部署方案。用户只需要在本地浏览器访问两个受保护的网页：一个显示远程 Chromium 画面，另一个提供 code-server 终端；浏览器 Profile、项目文件、登录状态和 Claude Code 进程都保留在服务器上。
+将 Claude 官方网页和官方 Claude Code 部署到远程 Linux 服务器上的固定工作区方案。
+
+[![License: CC BY 4.0](https://img.shields.io/badge/license-CC%20BY%204.0-0b7285.svg)](LICENSE)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-2f6f8e.svg)](https://www.linux.org/)
+[![Remote Chromium](https://img.shields.io/badge/client-Remote%20Chromium-4285f4.svg)](https://www.chromium.org/)
+[![Claude Code](https://img.shields.io/badge/CLI-Claude%20Code-d97706.svg)](https://code.claude.com/)
+
+</div>
+
+用户只需要在本地浏览器访问两个受保护的网页：一个显示远程 Chromium 画面，另一个提供 code-server 终端；浏览器 Profile、项目文件、登录状态和 Claude Code 进程都保留在服务器上。
+
+## 使用效果
+
+部署完成后，可以通过两个受保护的网页入口使用这套远程工作区：
+
+### Claude 网页版
+
+远程 Chromium 会直接打开 Claude 官方网页，浏览器 Profile 和登录状态都保留在服务器上。
+
+![远程 Chromium 中的 Claude 网页](assets/claude-web-ui.png)
+
+### Claude Code
+
+通过 code-server 进入服务器终端，并使用 tmux 保持 Claude Code 会话。即使关闭本地浏览器，后台任务也可以继续运行。
+
+![code-server 中通过 tmux 运行 Claude Code](assets/claude-code-tmux.png)
+
+## 写在前面
+我曾有过 6 个 Claude 账号被封的经历，其中包括 2 个 Free、1 个 Pro 和 3 个 Max。这个仓库也是在不断试用和踩坑的过程中，逐步整理出来的。
+
+如果你想先了解当前 IP 是否可能触发 Claude 的风控，可以使用这个网站进行评测：[fuck-claude.vercel.app](https://fuck-claude.vercel.app/zh/)。
+
+![Claude IP 风控评测示例](assets/claude-ip-risk-check.png)
+
+本文默认你已经准备好一台海外服务器，ARM、AMD64 或 Intel 架构均可，操作系统不限。
+
+这里分享几点实际使用中的经验：
+
+1. 建议直接在 VPS 上完成 Claude 账号的注册和首次登录。
+2. 如果使用 Apple 设备支付 Pro 订阅，登录设备（例如手机）的时区和网络出口最好与 VPS 所在国家保持一致。两者差异较大时，账号更容易触发验证；我之前的两个 Free 账号就曾在注册后很快被封禁。
+3. 注册、登录和支付流程尽量连续完成。支付成功后，可以卸载手机端的 Claude；之后只需确保 Apple 账户余额足够支付每月订阅即可。
+
+
 
 > [!IMPORTANT]
 > 在运行任何命令、把执行 Prompt 交给 AI 或修改服务器之前，必须完整阅读本 README.md 和 [AGENTS.md](AGENTS.md)。未读完前不要执行部署操作。
