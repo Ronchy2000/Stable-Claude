@@ -14,8 +14,11 @@
 
 - 远程 Chromium 访问官方 Claude.ai，使用画面串流；
 - code-server 提供浏览器终端，运行服务器上的官方 Claude Code；
+- 可选使用官方 VS Code Remote Tunnel，让本地 VS Code 连接同一服务器工作区并使用远程 Claude Code 扩展；
 - Cloudflare Access + 独立 Cloudflare Tunnel 是唯一公网入口；
 - Claude 网页和 Claude Code 不经过 Anthropic API relay、CPA、CLIProxyAPI、New API 或 LibreChat。
+
+这里的“唯一公网入口”是指项目自建的网页入口。可选 VS Code Remote Tunnel 使用微软官方服务建立出站连接，不创建本项目的入站监听、DNS 或 Caddy route。
 
 ## 默认部署模式
 
@@ -28,9 +31,10 @@
 - Chromium 使用独立 Docker bridge network；
 - Web 服务只监听 127.0.0.1；
 - Tunnel 单元名为 cloudflared-claude-workspace.service；
-- Chromium、code-server、Tunnel 使用独立 systemd 单元和资源上限。
+- Chromium、code-server、Tunnel 使用独立 systemd 单元和资源上限；
+- 用户明确启用桌面 VS Code 时，增加独立的 vscode-tunnel-claude-workspace.service，并让它与 code-server 共享工作区用户、运行 HOME、projects 和 TMUX_TMPDIR。
 
-只允许新增 /opt/claude-workspace、/srv/claude-workspace、名为 claude-workspace 的 Docker network、名为 claude-workspace-chromium 的容器，以及约定的三个 systemd 单元。不得为了方便使用不带 claude-workspace 标识的全局名称。
+只允许新增 /opt/claude-workspace、/srv/claude-workspace、名为 claude-workspace 的 Docker network、名为 claude-workspace-chromium 的容器，以及约定的工作区 systemd 单元。未选择桌面入口时不得擅自部署 VS Code Remote Tunnel。不得为了方便使用不带 claude-workspace 标识的全局名称。
 
 只有用户明确要求 dedicated-user 模式时，才创建 claude-ws 等专用账号、分离 HOME、ACL 或 nftables egress guard。多账户模式不是默认路径。
 
@@ -48,12 +52,15 @@
 10. 不把本地机场、代理变量、ANTHROPIC_BASE_URL 或第三方 relay 配到服务器的 Claude Code。
 11. 不复制其他设备的 Claude Profile、Cookie、~/.claude、~/.claude.json 或 OAuth Token。
 12. 不为健康检查发送真实模型请求；使用本地 health、systemd、Tunnel ready 和监听检查。
+13. VS Code Remote Tunnel 只能出站连接；不开放 Remote-SSH、authorized_keys、Caddy、DNS 或新端口，不运行 `tunnel service install` 或 `code update`。
+14. `code.<ZONE>` 只通向网页 code-server。本地 VS Code 必须使用官方 Remote Tunnels 连接方式，不能把这个 hostname 当成 VS Code Tunnel 或 SSH 地址。
 
 ## 必须停止并报告的情况
 
 - 当前 SSH 用户是 root，且没有用户指定的非 root 运行账号；
 - 3010/8080 和候选备用端口都被占用；
 - 发现已有同名工作区目录、容器、network、systemd 或 Tunnel 的来源不明；
+- 发现来源不明的 vscode-tunnel-claude-workspace.service、Tunnel 注册或远程扩展目录；
 - 旧服务在部署前后状态、启动时间、重启计数、端口、网络或配置发生变化；
 - 发现现有防火墙规则无法安全增量添加工作区规则；
 - 需要删除数据、volume、Profile、OAuth、Tunnel credentials 或修改旧服务；
@@ -73,16 +80,20 @@
 6. 在 Cloudflare 控制台创建两个默认拒绝、邮箱/身份组 + MFA 的 Access 应用。
 7. 创建独立 locally-managed Tunnel，仅路由到工作区回环端口；不用 Caddy，不创建源站 A/AAAA。
 8. 让用户完成远程 Chromium 的官方网页登录和远程 Claude Code OAuth。
-9. 用 scripts/check.sh verify、服务状态、端口、network、Tunnel ready 和旧服务基线做最终验收。
-10. 输出访问地址占位符、实际端口、服务状态、备份位置和回滚命令；不输出秘密。
+9. 用户选择桌面入口时，再部署固定版本的官方 VS Code CLI、独立 wrapper/systemd 和远程 `Anthropic.claude-code` 扩展；GitHub device login 由用户人工完成。
+10. 用 scripts/check.sh verify、服务状态、端口、network、Tunnel ready、可选 Remote Tunnel 和旧服务基线做最终验收。
+11. 输出访问地址占位符、实际端口、服务状态、备份位置和回滚命令；不输出秘密。
 
 ## 服务实现要求
 
 - Chromium 仅挂载 /srv/claude-workspace/browser；关闭分享、协作、文件传输、远程命令、麦克风等不需要的功能。
-- code-server 只打开 /srv/claude-workspace/projects，使用密码认证、disable telemetry、回环监听和 tmux。
+- code-server 只打开 /srv/claude-workspace/projects，使用密码认证、disable telemetry、回环监听和 tmux。其默认 Claude 入口是终端 CLI；不得假定或伪装已有 Claude 侧边栏。
 - Claude Code 运行时清除 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN、CLAUDE_CODE_OAUTH_TOKEN、HTTP_PROXY、HTTPS_PROXY、ALL_PROXY 等环境变量。
 - Tunnel 使用 credentials-file，不把长期 Token 放在 ExecStart 或 shell history。
-- systemd 停止/回滚工作区时只能操作名称以 claude-workspace 或 code-server-claude-workspace、cloudflared-claude-workspace 开头的单元。
+- 可选 VS Code Remote Tunnel 必须使用官方 ARM64 CLI 的固定版本和校验和、root 管理的受限 wrapper、独立 CLI/Server/extensions 目录及资源上限；远程扩展只安装官方 ID `Anthropic.claude-code`。
+- code-server 和 VS Code Remote Tunnel 必须使用同一非 root 用户、运行 HOME、projects 和工作区内的 TMUX_TMPDIR，但扩展目录必须分开。两端不得并发修改同一文件、执行 Git 写操作或恢复同一 Claude 会话。
+- Remote Tunnel GitHub device login 和 Claude 登录必须由用户完成；不得在命令行、仓库或聊天中传递 access/refresh token，也不得复制其他机器的注册状态。
+- systemd 停止/回滚工作区时只能操作名称以 claude-workspace 或 code-server-claude-workspace、cloudflared-claude-workspace、vscode-tunnel-claude-workspace 开头的单元。
 - 如果需要宿主机 egress 限制，必须先说明规则会影响哪些 UID/bridge，并只创建独立表；绝不 flush 现有防火墙。
 
 ## dedicated-user 模式
@@ -100,6 +111,7 @@
 
 - 仓库中只放公开说明、检查脚本和不含生产值的示例。
 - 不新增真实域名、IP、邮箱、Tunnel UUID、SSH 路径、生产 digest、备份路径或账号标识。
+- 发布前逐张检查图片中的地址栏、标题、账号、聊天、项目和终端内容，并清除图片元数据；文本扫描不能替代图片检查。
 - 使用 apply_patch 编辑文件；脚本必须通过 bash -n。
 - 修改后运行 git diff --check，并扫描工作树和 Git 历史。
 - 不自动 commit、push、修改 GitHub 可见性或创建发布，除非用户明确要求。

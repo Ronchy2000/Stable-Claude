@@ -80,6 +80,23 @@ check_unit() {
   fi
 }
 
+check_optional_vscode_tunnel() {
+  local unit=vscode-tunnel-claude-workspace.service exec_start
+  if ! have systemctl || ! systemctl cat "$unit" >/dev/null 2>&1; then
+    warn "optional systemd unit is not installed: $unit"
+    return
+  fi
+
+  check_unit "$unit" yes
+  exec_start=$(systemctl show "$unit" -p ExecStart --value 2>/dev/null || true)
+  if printf '%s\n' "$exec_start" | grep -q ' tunnel ' &&
+     ! printf '%s\n' "$exec_start" | grep -Eq -- 'serve-web|--host([=[:space:]]|$)|--port([=[:space:]]|$)'; then
+    say "VS Code Remote Tunnel is configured as an outbound tunnel"
+  else
+    fail "VS Code Remote Tunnel ExecStart is missing tunnel mode or contains a listener option"
+  fi
+}
+
 preflight() {
   say "Claude Workspace preflight (read-only)"
   say "mode=preflight browser_port=$browser_port code_port=$code_port"
@@ -133,7 +150,8 @@ preflight() {
 
   for unit in claude-workspace-chromium.service \
               code-server-claude-workspace.service \
-              cloudflared-claude-workspace.service; do
+              cloudflared-claude-workspace.service \
+              vscode-tunnel-claude-workspace.service; do
     check_unit "$unit" no
   done
 
@@ -146,6 +164,7 @@ verify() {
   check_unit claude-workspace-chromium.service yes
   check_unit code-server-claude-workspace.service yes
   check_unit cloudflared-claude-workspace.service yes
+  check_optional_vscode_tunnel
   check_loopback_port "$browser_port" chromium
   check_loopback_port "$code_port" code-server
 

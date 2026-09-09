@@ -11,7 +11,7 @@
 
 </div>
 
-用户只需要在本地浏览器访问两个受保护的网页：一个显示远程 Chromium 画面，另一个提供 code-server 终端；浏览器 Profile、项目文件、登录状态和 Claude Code 进程都保留在服务器上。
+用户可以在本地浏览器访问两个受保护的网页：一个显示远程 Chromium 画面，另一个提供 code-server 工作区。需要桌面 IDE 时，还可以用官方 VS Code Remote Tunnels 打开同一个服务器目录，并在本地 VS Code 侧边栏使用服务器上的 Claude Code。浏览器 Profile、项目文件、登录状态和 Claude Code 进程始终保留在服务器上。
 
 ## 使用效果
 
@@ -21,30 +21,31 @@
 
 远程 Chromium 会直接打开 Claude 官方网页，浏览器 Profile 和登录状态都保留在服务器上。
 
-![远程 Chromium 中的 Claude 网页](assets/claude-web-ui.png)
+![远程 Chromium 中的 Claude 网页（域名、账号与会话内容已移除）](assets/claude-web-ui.png)
 
 ### Claude Code
 
 通过 code-server 进入服务器终端，并使用 tmux 保持 Claude Code 会话。即使关闭本地浏览器，后台任务也可以继续运行。
 
-![code-server 中通过 tmux 运行 Claude Code](assets/claude-code-tmux.png)
+![code-server 中通过 tmux 运行 Claude Code（域名已移除）](assets/claude-code-tmux.png)
+
+如果更习惯本地 VS Code，可以启用可选的 Remote Tunnel。此时本地 VS Code 只是远程界面，Claude Code 扩展、终端、Git 和项目仍在服务器运行。
 
 ## 写在前面
+
 我曾有过 6 个 Claude 账号被封的经历，其中包括 2 个 Free、1 个 Pro 和 3 个 Max。这个仓库也是在不断试用和踩坑的过程中，逐步整理出来的。
 
 如果你想先了解当前 IP 是否可能触发 Claude 的风控，可以使用这个网站进行评测：[fuck-claude.vercel.app](https://fuck-claude.vercel.app/zh/)。
 
 ![Claude IP 风控评测示例](assets/claude-ip-risk-check.png)
 
-本文默认你已经准备好一台海外服务器，ARM、AMD64 或 Intel 架构均可，操作系统不限。
+本文默认你已经准备好一台 Ubuntu 22.04/24.04 ARM64（aarch64）服务器。AMD64 可以采用相同架构，但必须让部署 AI 重新选择对应发布物和校验和，不能照抄 ARM64 下载地址。
 
 这里分享几点实际使用中的经验：
 
 1. 建议直接在 VPS 上完成 Claude 账号的注册和首次登录。
 2. 如果使用 Apple 设备支付 Pro 订阅，登录设备（例如手机）的时区和网络出口最好与 VPS 所在国家保持一致。两者差异较大时，账号更容易触发验证；我之前的两个 Free 账号就曾在注册后很快被封禁。
 3. 注册、登录和支付流程尽量连续完成。支付成功后，可以卸载手机端的 Claude；之后只需确保 Apple 账户余额足够支付每月订阅即可。
-
-
 
 > [!IMPORTANT]
 > 在运行任何命令、把执行 Prompt 交给 AI 或修改服务器之前，必须完整阅读本 README.md 和 [AGENTS.md](AGENTS.md)。未读完前不要执行部署操作。
@@ -67,12 +68,13 @@ Anthropic 没有公开完整的风控规则，所以不能声称知道某个账�
 
 ## 这个项目具体做什么
 
-项目把两个官方客户端放到服务器上：
+项目把官方客户端放到服务器上：
 
 1. LinuxServer Chromium 直接打开官方 https://claude.ai，用户看到的是画面串流；
-2. code-server 提供浏览器终端，终端里运行官方 Claude Code，代码和命令都在服务器执行；
-3. Cloudflare Access 负责身份和 MFA，Cloudflare Tunnel 负责把本机回环端口安全带到浏览器；
-4. 工作区使用独立目录、Docker network、systemd 服务和资源限制，不触碰原有 Caddy、Docker、数据库和入口服务。
+2. code-server 提供浏览器编辑器和终端，终端里运行官方 Claude Code，代码和命令都在服务器执行；
+3. 可选的官方 VS Code Remote Tunnel 让本地桌面 VS Code 打开同一服务器目录，并使用远程安装的官方 Claude Code 扩展；
+4. Cloudflare Access 负责两个网页入口的身份和 MFA，Cloudflare Tunnel 负责把本机回环端口安全带到浏览器；
+5. 工作区使用独立目录、Docker network、systemd 服务和资源限制，不触碰原有 Caddy、Docker、数据库和入口服务。
 
 请求路径如下：
 
@@ -91,9 +93,19 @@ Anthropic 没有公开完整的风控规则，所以不能声称知道某个账�
   -> code-server
   -> 服务器上的官方 Claude Code
   -> Anthropic
+
+可选：本地 VS Code Desktop
+  -> GitHub 登录
+  -> Microsoft VS Code Remote Tunnels（出站连接）
+  -> 服务器上的 VS Code Server + Anthropic.claude-code
+  -> 服务器上的官方 Claude Code
+  -> Anthropic
 ~~~
 
-Claude 网页的 Cookie、浏览器 Profile、DNS、TLS 和网页请求留在服务器；Claude Code、项目文件和 Shell 也留在服务器。断开本地浏览器不会结束 tmux 中的任务。
+Claude 网页的 Cookie、浏览器 Profile、DNS、TLS 和网页请求留在服务器；Claude Code、项目文件和 Shell 也留在服务器。断开本地浏览器或 VS Code 不会结束 tmux 中的任务。
+
+> [!NOTE]
+> `https://code.<ZONE>` 只属于 Cloudflare Tunnel 后的网页 code-server。VS Code Desktop 不连接这个域名，而是通过微软官方 Remote Tunnels 连接 VPS；两者是独立入口，共享服务器工作区。
 
 本地机场或其他网络中继只用于访问 Cloudflare hostname，不应写入服务器的 HTTP_PROXY、HTTPS_PROXY、ANTHROPIC_BASE_URL，也不应把 Claude OAuth 交给 CPA、CLIProxyAPI 或其他第三方 relay。使用前仍需确认 Anthropic、Cloudflare、云厂商、网络服务商和当地法律允许这种方式。
 
@@ -112,7 +124,7 @@ Claude 网页的 Cookie、浏览器 Profile、DNS、TLS 和网页请求留在服
 - Cloudflare Tunnel 只指向回环端口，不经过现有 Caddy/Nginx，不创建指向服务器 IP 的 A/AAAA 记录。
 - 先记录旧容器、网络、监听端口、入口配置、磁盘和内存，再启动任何新服务。
 - 不执行全局 docker compose down、docker system prune、ufw reset、nft flush ruleset、系统级大范围升级或修改旧服务的 systemd/Caddy 配置。
-- 每个工作区服务有资源上限；失败时只停止工作区，不联动旧业务。
+- 每个工作区服务有资源上限；失败时只停止工作区，不联动旧业务。可选 Remote Tunnel 使用独立的 `vscode-tunnel-claude-workspace.service`，只建立出站连接，不新增监听端口。
 - 运行时 .env、密码、Tunnel credentials、浏览器 Profile、OAuth 状态和日志都放在仓库外。
 
 默认模式的边界是“运行和网络隔离”，不是强安全边界：当前管理员用户通常仍有 sudo 权限。如果服务器上有其他用户或敏感业务，请启用下面的可选多账户模式。
@@ -125,6 +137,7 @@ Claude 网页的 Cookie、浏览器 Profile、DNS、TLS 和网页请求留在服
 4. Access 使用的邮箱/身份组和 MFA。
 5. 服务器上的非 root SSH 管理账号，并且能够使用 sudo。
 6. 符合 Anthropic 服务条款的 Claude 账号。网页端使用订阅账号；Claude Code 使用官方支持的登录方式，不填 API relay 地址。
+7. 如果启用桌面入口，还需要本地 VS Code Desktop、官方 Remote - Tunnels 扩展，以及一个用于两端授权的 GitHub 账号。
 
 ## 最快开始
 
@@ -146,7 +159,8 @@ chmod +x scripts/check.sh
 1. 远程 Chromium 访问官方 https://claude.ai，并通过浏览器画面串流使用；
 2. code-server 提供浏览器终端，在服务器上运行官方 Claude Code；
 3. 两个服务只监听服务器回环地址，再由独立 Cloudflare Tunnel 暴露；
-4. 不使用 Anthropic API relay、CPA、CLIProxyAPI、New API、LibreChat、Cookie 导入或浏览器指纹伪装。
+4. 如果我选择桌面 VS Code 入口，再增加官方 VS Code Remote Tunnel 和远程 Anthropic.claude-code 扩展；
+5. 不使用 Anthropic API relay、CPA、CLIProxyAPI、New API、LibreChat、Cookie 导入或浏览器指纹伪装。
 
 先完整阅读当前仓库的 AGENTS.md 和 README.md，再执行：
 ./scripts/check.sh preflight
@@ -155,7 +169,7 @@ chmod +x scripts/check.sh
 - 默认使用当前 SSH 登录的非 root 用户（existing-user 模式）。只有我明确说“dedicated-user 模式”时，才创建 claude-ws 等新用户。
 - 绝不使用 root 运行 Chromium、code-server 或 Claude Code。若当前是 root 登录，先让我提供一个现有非 root 管理账号。
 - 先保存旧 Docker 容器、network、监听端口、Caddy/Nginx 状态、磁盘、内存和 systemd 状态。不要改变旧服务的镜像、volume、network、端口、启动时间或配置。
-- 只允许新增 /opt/claude-workspace、/srv/claude-workspace、名为 claude-workspace 的 Docker network、名为 claude-workspace-chromium 的容器，以及约定的三个 systemd 单元。默认数据目录为 /srv/claude-workspace，root 管理配置目录为 /opt/claude-workspace。
+- 只允许新增 /opt/claude-workspace、/srv/claude-workspace、名为 claude-workspace 的 Docker network、名为 claude-workspace-chromium 的容器，以及约定的工作区 systemd 单元。默认数据目录为 /srv/claude-workspace，root 管理配置目录为 /opt/claude-workspace。未启用桌面入口时，不要部署 Remote Tunnel。
 - 先确认 3010 和 8080 未被占用；被占用就选择其他未占用的 127.0.0.1 端口，并把端口告诉我。禁止绑定 0.0.0.0、host network 或旧 Docker network。
 - 不执行 docker compose down（除非明确指定工作区 compose 文件），不执行 docker system prune、ufw reset、nft flush ruleset、系统级大范围升级，也不修改旧 Caddy/Nginx、sshd、Docker daemon 或数据库。
 - 缺少依赖时只安装官方需要的最小软件包；如果 apt 操作会升级无关生产服务，先停下来询问我。
@@ -164,9 +178,13 @@ chmod +x scripts/check.sh
 - Chromium 通过独立 bridge network；关闭分享、协作、文件传输、远程命令、麦克风和不需要的桌面功能。给 Chromium、code-server、cloudflared 设置合理 CPU、内存、PID 和日志上限。
 - code-server 使用密码认证和回环监听；Claude Code 不设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN、CLAUDE_CODE_OAUTH_TOKEN，也不继承 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY。
 - Claude Code 在 /srv/claude-workspace/projects 中运行，并用 tmux 保持长任务。不要复制其他设备的 ~/.claude、~/.claude.json、Cookie 或 OAuth 状态。
+- code-server 的默认 Claude 入口是终端/tmux，不要声称它已经有 Claude 侧边栏，也不要从非官方市场下载同名扩展。
+- 如果我确认启用桌面 VS Code：先让我选择一个不含域名、用户名或主机名的 Tunnel 名称。固定官方 ARM64 VS Code CLI 的版本和 SHA-256，用 root 管理的受限 wrapper 与 vscode-tunnel-claude-workspace.service 运行；该服务必须与 code-server 使用同一非 root 用户、HOME、/srv/claude-workspace/projects 和工作区内的 TMUX_TMPDIR，但分别使用 /srv/claude-workspace/home/.local/share/vscode-tunnel-cli、/srv/claude-workspace/home/.local/share/vscode-tunnel-server 和 /srv/claude-workspace/home/.local/share/vscode-tunnel-extensions。ExecStart 使用 wrapper 执行 `tunnel --name <TUNNEL_NAME> --no-sleep --accept-server-license-terms --server-data-dir ... --extensions-dir ...`。只建立出站 Remote Tunnel，不开放 SSH、Caddy、DNS 或新监听端口，不运行 `tunnel service install` 或 `code update`。
+- Remote Tunnel 用 GitHub device login 人工授权；不要索要或把 access/refresh token 放在命令行。连接后只在“远程：Tunnel”一侧安装官方 `Anthropic.claude-code` 扩展。本地 VS Code 不连接 code.<ZONE>，Cloudflare Access 也不保护这条微软 Tunnel 链路。
+- code-server 和 VS Code Remote Tunnel 可以共享项目、Claude Code 登录态和 tmux，但不能同时修改同一文件、执行 Git 写操作或恢复同一个 Claude 会话。切换入口前保存文件并检查 git status；并行工作使用不同分支和 worktree。
 - 创建 Cloudflare Access 应用时使用默认拒绝，只允许我的邮箱/身份组并要求 MFA。Tunnel 使用独立 locally-managed credentials file，只连接工作区回环端口，不经过现有 Caddy，也不创建源站 A/AAAA 记录。
 - Cloudflare 控制台登录、Access 策略确认、Tunnel 授权、官方 Claude 网页登录和 Claude Code OAuth 登录属于人工步骤。到这些步骤时给出清晰的操作说明并暂停，不要索要或代填秘密。
-- 每完成一个阶段都运行本地健康检查、监听检查、Docker network 检查和旧服务回归；任一旧服务发生重启、配置变化、端口变化、健康状态变化或资源越线，立即停止并报告。
+- 每完成一个阶段都运行本地健康检查、监听检查、Docker network 检查和旧服务回归；启用 Remote Tunnel 时还要检查 systemd active/enabled、GitHub 授权状态、远程扩展 ID，并证明它没有新增 TCP 监听。检查不得输出 OAuth 内容或调用模型。任一旧服务发生重启、配置变化、端口变化、健康状态变化或资源越线，立即停止并报告。
 - 完成后给出：访问地址占位符、实际回环端口、服务状态、备份位置、回滚命令和仍需人工完成的登录步骤。不要输出秘密。
 
 如果我明确要求 dedicated-user 模式：
@@ -209,29 +227,113 @@ Tunnel credentials 放在服务器受限目录，由专用 cloudflared 用户读
 
 打开 `https://claude.<ZONE>`，通过 Access 和 Chromium 第二层认证后，在远程 Chromium 内只访问 `https://claude.ai`。登录成功后让 AI 重启 Chromium 并确认 Profile 持久化。
 
-### 4. 首次 Claude Code 登录
+### 4. 使用 `code.<ZONE>` 和首次 Claude Code 登录
 
-打开 `https://code.<ZONE>`，进入 `/srv/claude-workspace/projects`，连接或创建 tmux：
+`code.<ZONE>` 是随时可用的浏览器入口：
+
+1. 打开 `https://code.<ZONE>`，先通过 Cloudflare Access，再输入 code-server 自身密码；
+2. 打开服务器上的 `/srv/claude-workspace/projects`，不要把本地目录误当成远程目录；
+3. 在 Terminal 中连接或创建持久会话：
 
 ~~~bash
+cd /srv/claude-workspace/projects
 tmux new-session -A -s claude
+~~~
+
+进入 tmux 后再执行：
+
+~~~bash
 claude auth login
 claude auth status
 ~~~
 
-如果 CLI 显示登录 URL，把它复制到远程 Chromium 的地址栏完成授权，不要在本地另起 Claude Code，也不要把回调地址改成公共 URL。
+如果 CLI 显示登录 URL，把它复制到远程 Chromium 的地址栏完成官方授权，不要在本地另起 Claude Code，也不要把回调地址改成公共 URL。以后只需重新连接同一个 tmux；关闭网页标签不会结束其中的任务。
 
-### 5. 在中国或其他不稳定网络中使用
+> [!IMPORTANT]
+> code-server 的默认 Claude 入口是 Terminal 中的官方 CLI，并不等于已经有 Claude 侧边栏。不要从不明扩展市场下载同名插件，也不要把 VS Code Remote Tunnel 的扩展目录复制给 code-server。下面的桌面入口才使用官方扩展 `Anthropic.claude-code`。
 
-本地机场/中继只配置在本地设备，用来访问 https://claude.<ZONE> 和 https://code.<ZONE>。服务器上的 Chromium、code-server 和 Claude Code 不要继承本地代理环境。这样本地网络变化不会改变 Claude 官方请求的服务器出口，但仍然不代表平台政策或地区限制被绕过。
+### 5. 可选：在本地 VS Code 使用 Claude 侧边栏
+
+这是与 `code.<ZONE>` 并列的第二个 Code 入口。服务器运行官方 VS Code CLI Remote Tunnel，本地 VS Code 通过微软的 Tunnel 服务打开服务器目录；不需要 Remote-SSH、VPS 公网端口、Caddy 或第三个域名。
+
+官方参考：[VS Code Remote Tunnels](https://code.visualstudio.com/docs/remote/tunnels)、[Claude Code for VS Code](https://code.claude.com/docs/en/vs-code)。
+
+让执行 Prompt 的 AI 完成服务器端部署时，必须满足：
+
+- 使用与 code-server 相同的非 root 用户、`/srv/claude-workspace/home`、项目目录和 `TMUX_TMPDIR`，这样两个入口看到相同的项目、Claude Code 登录状态与 tmux；
+- 使用独立的 VS Code CLI、Server 和扩展目录，固定官方 ARM64 版本并校验 SHA-256；
+- 只由 `vscode-tunnel-claude-workspace.service` 建立出站连接，不新增 TCP 监听，不开启 SSH，也不运行 VS Code CLI 自带的 `tunnel service install`；
+- 清除 Anthropic Key/Base URL、第三方 relay 和代理环境变量，并为服务设置独立 CPU、内存、PID 与日志上限；
+- GitHub device login、许可确认和 Claude 登录由用户自己完成，凭据只保存在仓库外的工作区 HOME。
+
+部署 AI 创建好 wrapper 后，应把 `<WORKSPACE_USER>` 替换成现场确认的非 root 用户，并让你在可信 SSH 终端亲自运行：
+
+~~~bash
+sudo -u <WORKSPACE_USER> env -i \
+  HOME=/srv/claude-workspace/home \
+  USER=<WORKSPACE_USER> LOGNAME=<WORKSPACE_USER> SHELL=/bin/bash \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  /usr/local/bin/vscode-tunnel tunnel user login --provider github
+~~~
+
+服务器显示 GitHub device code 后，在自己的浏览器完成一次授权；保持 SSH 命令运行到它明确报告成功。然后在本地操作：
+
+1. 安装官方 VS Code Desktop 和微软的 Remote - Tunnels 扩展；
+2. 在 VS Code Accounts 中登录服务器授权时使用的同一个 GitHub 账号；
+3. 打开命令面板，运行 `Remote Tunnels: Connect to Tunnel`，选择部署时自定义的 Tunnel 名称；
+4. 连接后打开 `/srv/claude-workspace/projects/<PROJECT>`，确认窗口左下角显示远程 Tunnel；
+5. 在 Extensions 面板切换到远程端，安装或启用发布者为 Anthropic、ID 为 `Anthropic.claude-code` 的官方扩展；
+6. 打开 Claude 侧边栏。如果它要求登录，只完成官方 Claude 登录；集成终端和侧边栏都在 VPS 上执行。
+
+> [!NOTE]
+> 本地 VS Code 只是界面。它不通过 `code.<ZONE>`，也不把 Claude 请求改成本地出口；Git、语言运行时、Claude Code 扩展和项目文件仍在 VPS。网页 code-server 在桌面 Tunnel 故障时仍可作为独立备用入口。
+
+> [!IMPORTANT]
+> 两个入口可以同时在线，但不能同时修改同一文件、执行 Git 写操作或恢复同一个 Claude 会话。切换前保存文件并运行 `git status`；确需并行时使用不同分支和 worktree。tmux 是会话保持工具，不是备份。
+
+### 6. 在 Clash 等工具中把网页 Tunnel 设为直连
+
+如果本地网络可以稳定访问 Cloudflare，建议只把自己的两个 Cloudflare Tunnel hostname 设为 `DIRECT`。这会去掉“本地 -> 机场 -> Cloudflare”的额外链路；本地仍只连接 Cloudflare 边缘，不会暴露 VPS 的回环端口或改变服务器访问 Anthropic 的出口。
+
+Clash / Mihomo / Stash 规则：
+
+~~~yaml
+rules:
+  - DOMAIN,claude.example.com,DIRECT
+  - DOMAIN,code.example.com,DIRECT
+  # 其余规则……
+  - MATCH,PROXY
+~~~
+
+Surge / Loon：
+
+~~~text
+DOMAIN,claude.example.com,DIRECT
+DOMAIN,code.example.com,DIRECT
+~~~
+
+Quantumult X：
+
+~~~text
+host, claude.example.com, direct
+host, code.example.com, direct
+~~~
+
+把示例域名替换为自己的完整 hostname，并把这两条精确规则放在 `MATCH`、`FINAL` 或其他兜底代理规则之前。修改后分别打开两个地址，确认仍先出现 Cloudflare Access，而不是源站页面。
+
+> [!IMPORTANT]
+> 只对自己的 `claude.<ZONE>` 和 `code.<ZONE>` 使用精确直连规则。不要照抄真实域名，不要把 VPS IP 写进规则，也不要为了省事把整个 `claude.ai`、Cloudflare、GitHub 或 Microsoft 域名设为直连。VS Code Remote Tunnel 不经过 `code.<ZONE>`，其动态服务端点不在这两条规则的范围内。
+
+本地机场/中继只能留在本地设备，不得把代理变量写进服务器的 Chromium、code-server、VS Code Tunnel 或 Claude Code。这样本地网络变化不会改变 Claude 官方请求的 VPS 出口，但仍然不代表平台政策或地区限制被绕过；如果本地直连 Cloudflare 实测不可用，应恢复原规则并排查本地链路，而不是修改 VPS 的 Anthropic 出口。
 
 ## 日常使用
 
 - 网页端：只打开 `https://claude.<ZONE>`，不要在多个本地 Profile 之间混用同一账号。
-- Code：打开 `https://code.<ZONE>`，在 code-server 终端使用同一个 tmux 会话。
-- 健康检查：只检查 systemd 状态、Chromium health、code-server healthz、Tunnel ready 和回环监听，不用真实模型请求做心跳。
-- 备份：至少备份 /srv/claude-workspace/projects、浏览器 Profile、Claude Code 状态、/opt/claude-workspace 和 Tunnel credentials；OAuth/Cookie/密码只能进入加密备份。
-- 升级：一次只升级一个组件，先备份和记录版本，再做 ARM64 预检、回环验收和旧服务回归。
+- 浏览器 Code：打开 `https://code.<ZONE>`，在 code-server Terminal 中连接同一个 tmux 会话。
+- 桌面 Code：从 VS Code 的 `Remote Tunnels: Connect to Tunnel` 进入，不要把 `code.<ZONE>` 填进 Remote-SSH 或 Tunnel 地址栏。
+- 健康检查：只检查 systemd 状态、Chromium health、code-server healthz、Cloudflare Tunnel ready、回环监听和可选 Remote Tunnel 状态，不用真实模型请求做心跳。
+- 备份：至少备份 `/srv/claude-workspace/projects`、浏览器 Profile、Claude Code 状态、`/opt/claude-workspace` 和 Tunnel credentials；启用桌面入口时还要覆盖 VS Code Tunnel 的授权与注册状态。OAuth、Cookie 和密码只能进入加密备份。
+- 升级：一次只升级一个组件，先备份和记录版本，再做 ARM64 预检、监听边界验收和旧服务回归。
 
 ## 可选：Linux 多账户强隔离
 
@@ -248,7 +350,7 @@ claude auth status
 ## 出问题时怎么回滚
 
 1. 先从 Cloudflare 删除或停用两个 Tunnel route。
-2. 停止 cloudflared-claude-workspace.service、code-server-claude-workspace.service 和 claude-workspace-chromium.service。
+2. 如果已启用，先停止 vscode-tunnel-claude-workspace.service；再停止 cloudflared-claude-workspace.service、code-server-claude-workspace.service 和 claude-workspace-chromium.service。
 3. 只对工作区 compose 执行 docker compose down，不要加 -v。
 4. 恢复工作区配置、systemd 单元和专用 network；不要删除浏览器 Profile、OAuth 状态或项目数据。
 5. 对比部署前后的旧容器、network、监听端口、Caddy/Nginx 和资源状态。确认旧服务未被重启或改变后再结束排障。
@@ -265,6 +367,8 @@ git rev-list --all --objects
 ~~~
 
 所有真实域名、IP、邮箱、Tunnel ID、Cookie、OAuth、密码、API Key、SSH key、生产 digest 和运行时目录都必须留在仓库外。不要把本地机场配置或服务器备份提交到 GitHub。
+
+截图也属于发布内容：逐张检查地址栏、标签标题、账号菜单、聊天内容、项目名和终端路径，并移除 EXIF、文本块等元数据。只靠局部模糊 hostname 不算完整脱敏；应整段遮挡或使用纯示例图。
 
 ## 文件
 
